@@ -63,25 +63,48 @@ echo "Grab one from https://huggingface.co/settings/tokens"
 echo ""
 hf auth login
 
+# ─── detect VRAM ────────────────────────────────────────────────────
+banner "Detecting GPU memory"
+VRAM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d ' ')
+VRAM_GIB=$(( VRAM_MIB / 1024 ))
+ok "GPU has ~${VRAM_GIB} GiB VRAM"
+
 # ─── choose a model ─────────────────────────────────────────────────
 banner "Model selection"
-DEFAULT_MODEL="Qwen/Qwen2.5-72B-Instruct"
-echo "Popular choices for ≈100 GB VRAM:"
-echo "  1) Qwen/Qwen2.5-72B-Instruct   (excellent coding, fast)"
-echo "  2) Qwen/Qwen3-32B              (newer Qwen family)"
-echo "  3) Enter a custom HF model id"
 echo ""
-read -rp "Pick [1/2/3] (default 1): " MODEL_CHOICE
+echo "Your GPU has ~${VRAM_GIB} GiB VRAM. Model sizes in bf16:"
+echo "  32B ≈ 64 GB   (fits easily, long context possible)"
+echo "  72B ≈ 144 GB  (needs quantization on your GPU)"
+echo ""
+echo "Recommended models:"
+echo "  1) Qwen/Qwen2.5-Coder-32B-Instruct  (32B, great coder, fits in bf16)"
+echo "  2) Qwen/Qwen3-32B                    (32B, newer, fits in bf16)"
+echo "  3) Qwen/Qwen2.5-72B-Instruct-AWQ     (72B 4-bit quantized, ~38 GB)"
+echo "  4) Enter a custom HF model id"
+echo ""
+read -rp "Pick [1/2/3/4] (default 1): " MODEL_CHOICE
+EXTRA_ARGS=""
 case "${MODEL_CHOICE:-1}" in
-    1) MODEL="Qwen/Qwen2.5-72B-Instruct" ;;
+    1) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct" ;;
     2) MODEL="Qwen/Qwen3-32B" ;;
-    3) read -rp "Model id (org/name): " MODEL
-       [[ -z "$MODEL" ]] && fail "No model specified" ;;
-    *) MODEL="$DEFAULT_MODEL" ;;
+    3) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
+       EXTRA_ARGS="--quantization awq" ;;
+    4) read -rp "Model id (org/name): " MODEL
+       [[ -z "$MODEL" ]] && fail "No model specified"
+       read -rp "Quantization? [none/awq/gptq/fp8] (default none): " QUANT
+       if [[ -n "$QUANT" && "$QUANT" != "none" ]]; then
+           EXTRA_ARGS="--quantization ${QUANT}"
+       fi ;;
+    *) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct" ;;
 esac
-ok "Will serve: ${MODEL}"
+ok "Will serve: ${MODEL} ${EXTRA_ARGS}"
 
 # ─── configurable context length ────────────────────────────────────
+echo ""
+echo "Longer context = more VRAM for KV cache."
+echo "  32K  — safe default, good for most tasks"
+echo "  64K  — fine for 32B models on ${VRAM_GIB} GB"
+echo "  128K — may work for quantized / smaller models"
 read -rp "Max context length [default 32768]: " MAX_CTX
 MAX_CTX="${MAX_CTX:-32768}"
 
@@ -99,6 +122,8 @@ vllm serve "$MODEL" \
     --host 127.0.0.1 \
     --port "$VLLM_PORT" \
     --max-model-len "$MAX_CTX" \
+    --gpu-memory-utilization 0.92 \
+    ${EXTRA_ARGS} \
     > /tmp/vllm.log 2>&1 &
 VLLM_PID=$!
 ok "vLLM starting (pid ${VLLM_PID}) — logs at /tmp/vllm.log"
@@ -114,8 +139,8 @@ for i in $(seq 1 600); do
     # check the process is still alive
     if ! kill -0 "$VLLM_PID" 2>/dev/null; then
         echo ""
-        fail "vLLM exited unexpectedly. Last 30 lines of log:"
-        tail -30 /tmp/vllm.log
+        echo -e "${RED}✗ vLLM exited unexpectedly. Last 40 lines of log:${RESET}"
+        tail -40 /tmp/vllm.log
         exit 1
     fi
     printf "\r  waiting… %ds" "$i"

@@ -28,8 +28,8 @@ fi
 
 # ─── Python dependencies ────────────────────────────────────────────
 banner "Installing Python packages"
-pip install -q --upgrade pip
-pip install -q vllm huggingface_hub fastapi uvicorn httpx
+pip install --upgrade pip
+pip install vllm huggingface_hub fastapi uvicorn httpx
 ok "vLLM + proxy deps installed"
 
 # ─── Hugging Face login ─────────────────────────────────────────────
@@ -37,7 +37,7 @@ banner "Hugging Face login"
 echo "Some models (Llama, gated Qwen, etc.) need a HF token."
 echo "Grab one from https://huggingface.co/settings/tokens"
 echo ""
-huggingface-cli login
+hf auth login
 
 # ─── choose a model ─────────────────────────────────────────────────
 banner "Model selection"

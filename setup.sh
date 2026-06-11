@@ -32,6 +32,30 @@ pip install --upgrade pip
 pip install vllm huggingface_hub fastapi uvicorn httpx
 ok "vLLM + proxy deps installed"
 
+# ─── CUDA library path fix (pip-installed CUDA libs) ────────────────
+banner "Configuring CUDA library paths"
+NVIDIA_LIBS=$(python3 -c "
+import glob, os
+try:
+    import nvidia
+    base = os.path.dirname(nvidia.__path__[0])
+    paths = glob.glob(os.path.join(base, 'nvidia', '*', 'lib'))
+    print(':'.join(paths))
+except ImportError:
+    print('')
+" 2>/dev/null || true)
+
+if [[ -n "$NVIDIA_LIBS" ]]; then
+    export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${LD_LIBRARY_PATH:-}"
+    ok "Added pip CUDA libs to LD_LIBRARY_PATH"
+fi
+
+# also check system CUDA
+if [[ -d /usr/local/cuda/lib64 ]]; then
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+    ok "Added system CUDA to LD_LIBRARY_PATH"
+fi
+
 # ─── Hugging Face login ─────────────────────────────────────────────
 banner "Hugging Face login"
 echo "Some models (Llama, gated Qwen, etc.) need a HF token."

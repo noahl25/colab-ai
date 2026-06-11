@@ -207,34 +207,29 @@ done
 [[ -n "$TUNNEL_URL" ]] || fail "Could not detect tunnel URL — check /tmp/cloudflared.log"
 
 # ─── summary ───────────────────────────────────────────────────────
-banner "🎉  All set!"
+banner "All set!"
 
-cat <<EOF
-
-${BOLD}Model:${RESET}       ${MODEL}
-${BOLD}Tunnel URL:${RESET}  ${TUNNEL_URL}
-${BOLD}API Key:${RESET}     ${COLAB_API_KEY}
-
-${BOLD}OpenAI-compatible base URL:${RESET}
-  ${TUNNEL_URL}/v1
-
-${BOLD}Quick test:${RESET}
-  curl ${TUNNEL_URL}/v1/models \\
-    -H "Authorization: Bearer ${COLAB_API_KEY}"
-
-${BOLD}Use in Cursor / Aider / etc:${RESET}
-  Base URL → ${TUNNEL_URL}/v1
-  API Key  → ${COLAB_API_KEY}
-
-${BOLD}Logs:${RESET}
-  vLLM        → /tmp/vllm.log
-  Proxy       → /tmp/proxy.log
-  Cloudflare  → /tmp/cloudflared.log
-
-${BOLD}Stop everything:${RESET}
-  kill ${VLLM_PID} ${PROXY_PID} ${CF_PID}
-
-EOF
-
-# keep the script alive so the user can Ctrl-C to stop all
-wait
+echo ""
+echo -e "${BOLD}Model:${RESET}       ${MODEL}"
+echo -e "${BOLD}Tunnel URL:${RESET}  ${TUNNEL_URL}"
+echo -e "${BOLD}API Key:${RESET}     ${COLAB_API_KEY}"
+echo ""
+echo -e "${BOLD}OpenAI-compatible base URL:${RESET}"
+echo "  ${TUNNEL_URL}/v1"
+echo ""
+echo -e "${BOLD}Quick test:${RESET}"
+echo "  curl ${TUNNEL_URL}/v1/models \\"
+echo "    -H \"Authorization: Bearer ${COLAB_API_KEY}\""
+echo ""
+echo -e "${BOLD}Use in Cursor / Aider / etc:${RESET}"
+echo "  Base URL  ${TUNNEL_URL}/v1"
+echo "  API Key   ${COLAB_API_KEY}"
+echo ""
+echo -e "${BOLD}Logs:${RESET}"
+echo "  vLLM        /tmp/vllm.log"
+echo "  Proxy       /tmp/proxy.log"
+echo "  Cloudflare  /tmp/cloudflared.log"
+echo ""
+echo -e "${BOLD}Stop everything:${RESET}"
+echo "  kill ${VLLM_PID} ${PROXY_PID} ${CF_PID}"
+echo ""

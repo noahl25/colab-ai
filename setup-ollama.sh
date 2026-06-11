@@ -22,7 +22,7 @@ ok "python3 found"
 # ─── install system dependencies ────────────────────────────────────
 banner "Installing system packages"
 if command -v apt-get &>/dev/null; then
-    apt-get update -qq && apt-get install -y -qq wget curl > /dev/null 2>&1
+    apt-get update -qq && apt-get install -y -qq wget curl zstd > /dev/null 2>&1
     ok "wget / curl installed"
 fi
 
@@ -73,6 +73,15 @@ case "${MODEL_CHOICE:-1}" in
 esac
 ok "Will serve: ${MODEL}"
 
+# ─── context length ─────────────────────────────────────────────────
+echo ""
+echo "Ollama defaults to 2048 tokens regardless of the model's native maximum."
+echo "Set this to the model's full context length to unlock long-context support."
+echo ""
+read -rp "Context length [default: 32768]: " NUM_CTX
+NUM_CTX="${NUM_CTX:-32768}"
+ok "Will use context length: ${NUM_CTX}"
+
 # ─── generate API key ──────────────────────────────────────────────
 COLAB_API_KEY="sk-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
 export COLAB_API_KEY
@@ -83,7 +92,7 @@ PROXY_PORT=8001
 
 # ─── start Ollama server ────────────────────────────────────────────
 banner "Starting Ollama server"
-OLLAMA_HOST="127.0.0.1:${OLLAMA_PORT}" ollama serve > /tmp/ollama.log 2>&1 &
+OLLAMA_HOST="127.0.0.1:${OLLAMA_PORT}" OLLAMA_NUM_CTX="${NUM_CTX}" ollama serve > /tmp/ollama.log 2>&1 &
 OLLAMA_PID=$!
 ok "Ollama starting (pid ${OLLAMA_PID}) — logs at /tmp/ollama.log"
 

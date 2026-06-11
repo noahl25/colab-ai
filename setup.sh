@@ -129,10 +129,17 @@ banner "Starting vLLM (model download may take a while on first run)"
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
+MODEL_ALIAS=$(echo "$MODEL" | sed 's|.*/||')
+
+MODEL_ALIAS=$(echo "$MODEL" | sed 's|.*/||')
+
 vllm serve "$MODEL" \
     --host 127.0.0.1 \
     --port "$VLLM_PORT" \
     --gpu-memory-utilization 0.92 \
+    --served-model-name "$MODEL" "$MODEL_ALIAS" \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
     ${MAX_CTX_ARGS} \
     ${EXTRA_ARGS} \
     > /tmp/vllm.log 2>&1 &

@@ -84,7 +84,7 @@ read -rp "Pick [1/2/3/4] (default 1): " MODEL_CHOICE
 EXTRA_ARGS=""
 case "${MODEL_CHOICE:-1}" in
     1) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
-       EXTRA_ARGS="--quantization awq" ;;
+       EXTRA_ARGS="--quantization awq_marlin" ;;
     2) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct" ;;
     3) MODEL="Qwen/Qwen3-32B" ;;
     4) read -rp "Model id (org/name): " MODEL
@@ -94,7 +94,7 @@ case "${MODEL_CHOICE:-1}" in
            EXTRA_ARGS="--quantization ${QUANT}"
        fi ;;
     *) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
-       EXTRA_ARGS="--quantization awq" ;;
+       EXTRA_ARGS="--quantization awq_marlin" ;;
 esac
 ok "Will serve: ${MODEL} ${EXTRA_ARGS}"
 
@@ -123,6 +123,12 @@ PROXY_PORT=8001
 
 # ─── start vLLM ────────────────────────────────────────────────────
 banner "Starting vLLM (model download may take a while on first run)"
+
+# FlashInfer JIT can't detect Blackwell (SM 12.x) on CUDA < 12.9,
+# causing a false "requires sm75 or higher" error. Disable it.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+
 vllm serve "$MODEL" \
     --host 127.0.0.1 \
     --port "$VLLM_PORT" \

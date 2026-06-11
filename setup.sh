@@ -72,41 +72,46 @@ ok "GPU has ~${VRAM_GIB} GiB VRAM"
 # ─── choose a model ─────────────────────────────────────────────────
 banner "Model selection"
 echo ""
-echo "Your GPU has ~${VRAM_GIB} GiB VRAM. Model sizes in bf16:"
-echo "  32B ≈ 64 GB   (fits easily, long context possible)"
-echo "  72B ≈ 144 GB  (needs quantization on your GPU)"
+echo "Your GPU has ~${VRAM_GIB} GiB VRAM."
 echo ""
 echo "Recommended models:"
-echo "  1) Qwen/Qwen2.5-Coder-32B-Instruct  (32B, great coder, fits in bf16)"
-echo "  2) Qwen/Qwen3-32B                    (32B, newer, fits in bf16)"
-echo "  3) Qwen/Qwen2.5-72B-Instruct-AWQ     (72B 4-bit quantized, ~38 GB)"
+echo "  1) Qwen/Qwen2.5-72B-Instruct-AWQ     (72B, 4-bit, ~38 GB, 128K context) ← BEST"
+echo "  2) Qwen/Qwen2.5-Coder-32B-Instruct   (32B, bf16, ~64 GB, 32K context)"
+echo "  3) Qwen/Qwen3-32B                     (32B, bf16, ~64 GB)"
 echo "  4) Enter a custom HF model id"
 echo ""
 read -rp "Pick [1/2/3/4] (default 1): " MODEL_CHOICE
 EXTRA_ARGS=""
 case "${MODEL_CHOICE:-1}" in
-    1) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct" ;;
-    2) MODEL="Qwen/Qwen3-32B" ;;
-    3) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
+    1) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
        EXTRA_ARGS="--quantization awq" ;;
+    2) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct" ;;
+    3) MODEL="Qwen/Qwen3-32B" ;;
     4) read -rp "Model id (org/name): " MODEL
        [[ -z "$MODEL" ]] && fail "No model specified"
        read -rp "Quantization? [none/awq/gptq/fp8] (default none): " QUANT
        if [[ -n "$QUANT" && "$QUANT" != "none" ]]; then
            EXTRA_ARGS="--quantization ${QUANT}"
        fi ;;
-    *) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct" ;;
+    *) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
+       EXTRA_ARGS="--quantization awq" ;;
 esac
 ok "Will serve: ${MODEL} ${EXTRA_ARGS}"
 
 # ─── configurable context length ────────────────────────────────────
 echo ""
-echo "Longer context = more VRAM for KV cache."
-echo "  32K  — safe default, good for most tasks"
-echo "  64K  — fine for 32B models on ${VRAM_GIB} GB"
-echo "  128K — may work for quantized / smaller models"
-read -rp "Max context length [default 32768]: " MAX_CTX
-MAX_CTX="${MAX_CTX:-32768}"
+echo "Context length is capped by the model's max_position_embeddings."
+echo "vLLM will auto-detect the model's native max if you leave this blank."
+echo ""
+read -rp "Max context length [default: auto-detect from model]: " MAX_CTX
+
+MAX_CTX_ARGS=""
+if [[ -n "$MAX_CTX" ]]; then
+    MAX_CTX_ARGS="--max-model-len ${MAX_CTX}"
+    ok "Will use --max-model-len ${MAX_CTX}"
+else
+    ok "Will use model's native max context length"
+fi
 
 # ─── generate API key ──────────────────────────────────────────────
 COLAB_API_KEY="sk-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
@@ -121,8 +126,8 @@ banner "Starting vLLM (model download may take a while on first run)"
 vllm serve "$MODEL" \
     --host 127.0.0.1 \
     --port "$VLLM_PORT" \
-    --max-model-len "$MAX_CTX" \
     --gpu-memory-utilization 0.92 \
+    ${MAX_CTX_ARGS} \
     ${EXTRA_ARGS} \
     > /tmp/vllm.log 2>&1 &
 VLLM_PID=$!

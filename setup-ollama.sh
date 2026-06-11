@@ -26,42 +26,20 @@ if command -v apt-get &>/dev/null; then
     ok "wget / curl installed"
 fi
 
+# ─── install ollama ─────────────────────────────────────────────────
+banner "Installing Ollama"
+if ! command -v ollama &>/dev/null; then
+    curl -fsSL https://ollama.com/install.sh | sh
+    ok "Ollama installed"
+else
+    ok "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
+fi
+
 # ─── Python dependencies ────────────────────────────────────────────
 banner "Installing Python packages"
 pip install --upgrade pip
-pip install vllm huggingface_hub fastapi uvicorn httpx
-ok "vLLM + proxy deps installed"
-
-# ─── CUDA library path fix (pip-installed CUDA libs) ────────────────
-banner "Configuring CUDA library paths"
-NVIDIA_LIBS=$(python3 -c "
-import glob, os
-try:
-    import nvidia
-    base = os.path.dirname(nvidia.__path__[0])
-    paths = glob.glob(os.path.join(base, 'nvidia', '*', 'lib'))
-    print(':'.join(paths))
-except ImportError:
-    print('')
-" 2>/dev/null || true)
-
-if [[ -n "$NVIDIA_LIBS" ]]; then
-    export LD_LIBRARY_PATH="${NVIDIA_LIBS}:${LD_LIBRARY_PATH:-}"
-    ok "Added pip CUDA libs to LD_LIBRARY_PATH"
-fi
-
-# also check system CUDA
-if [[ -d /usr/local/cuda/lib64 ]]; then
-    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
-    ok "Added system CUDA to LD_LIBRARY_PATH"
-fi
-
-# ─── Hugging Face login ─────────────────────────────────────────────
-banner "Hugging Face login"
-echo "Some models (Llama, gated Qwen, etc.) need a HF token."
-echo "Grab one from https://huggingface.co/settings/tokens"
-echo ""
-hf auth login
+pip install fastapi uvicorn httpx
+ok "Proxy deps installed"
 
 # ─── detect VRAM ────────────────────────────────────────────────────
 banner "Detecting GPU memory"
@@ -74,107 +52,75 @@ banner "Model selection"
 echo ""
 echo "Your GPU has ~${VRAM_GIB} GiB VRAM."
 echo ""
-echo "Recommended models:"
-echo "  1) Qwen/Qwen2.5-72B-Instruct-AWQ     (72B, 4-bit, ~38 GB, 128K context) ← BEST"
-echo "  2) Qwen/Qwen2.5-Coder-32B-Instruct   (32B, bf16, ~64 GB, 32K context)"
-echo "  3) Qwen/Qwen3-32B                     (32B, bf16, ~64 GB)"
-echo "  4) Enter a custom HF model id"
+echo "Recommended models (Ollama library names):"
+echo "  1) llama3.3:70b           (70B, ~43 GB, 128K ctx, tools) ← BEST all-round / RAG"
+echo "  2) qwen2.5-coder:32b      (32B, ~22 GB, 128K ctx, tools) ← BEST coding (92.7% HumanEval)"
+echo "  3) deepseek-r1:32b        (32B, ~20 GB, 128K ctx)        ← BEST reasoning / math"
+echo "  4) qwen3-coder:30b        (30B, ~18 GB, 128K ctx, tools) ← BEST agentic coding"
+echo "  5) gemma4:26b             (26B, ~17 GB, 128K ctx, tools) ← BEST multimodal / vision"
+echo "  6) Enter a custom Ollama model tag"
 echo ""
-read -rp "Pick [1/2/3/4] (default 1): " MODEL_CHOICE
-EXTRA_ARGS=""
+read -rp "Pick [1/2/3/4/5/6] (default 1): " MODEL_CHOICE
 case "${MODEL_CHOICE:-1}" in
-    1) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
-       EXTRA_ARGS="--quantization awq_marlin" ;;
-    2) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct" ;;
-    3) MODEL="Qwen/Qwen3-32B" ;;
-    4) read -rp "Model id (org/name): " MODEL
-       [[ -z "$MODEL" ]] && fail "No model specified"
-       read -rp "Quantization? [none/awq/gptq/fp8] (default none): " QUANT
-       if [[ -n "$QUANT" && "$QUANT" != "none" ]]; then
-           EXTRA_ARGS="--quantization ${QUANT}"
-       fi ;;
-    *) MODEL="Qwen/Qwen2.5-72B-Instruct-AWQ"
-       EXTRA_ARGS="--quantization awq_marlin" ;;
+    1) MODEL="llama3.3:70b" ;;
+    2) MODEL="qwen2.5-coder:32b" ;;
+    3) MODEL="deepseek-r1:32b" ;;
+    4) MODEL="qwen3-coder:30b" ;;
+    5) MODEL="gemma4:26b" ;;
+    6) read -rp "Model tag (e.g. llama3.3:70b): " MODEL
+       [[ -z "$MODEL" ]] && fail "No model specified" ;;
+    *) MODEL="llama3.3:70b" ;;
 esac
-ok "Will serve: ${MODEL} ${EXTRA_ARGS}"
-
-# ─── configurable context length ────────────────────────────────────
-echo ""
-echo "Context length is capped by the model's max_position_embeddings."
-echo "vLLM will auto-detect the model's native max if you leave this blank."
-echo ""
-read -rp "Max context length [default: auto-detect from model]: " MAX_CTX
-
-MAX_CTX_ARGS=""
-if [[ -n "$MAX_CTX" ]]; then
-    MAX_CTX_ARGS="--max-model-len ${MAX_CTX}"
-    ok "Will use --max-model-len ${MAX_CTX}"
-else
-    ok "Will use model's native max context length"
-fi
+ok "Will serve: ${MODEL}"
 
 # ─── generate API key ──────────────────────────────────────────────
 COLAB_API_KEY="sk-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
 export COLAB_API_KEY
 
 # ─── ports ──────────────────────────────────────────────────────────
-VLLM_PORT=8000
+OLLAMA_PORT=11434
 PROXY_PORT=8001
 
-# ─── start vLLM ────────────────────────────────────────────────────
-banner "Starting vLLM (model download may take a while on first run)"
+# ─── start Ollama server ────────────────────────────────────────────
+banner "Starting Ollama server"
+OLLAMA_HOST="127.0.0.1:${OLLAMA_PORT}" ollama serve > /tmp/ollama.log 2>&1 &
+OLLAMA_PID=$!
+ok "Ollama starting (pid ${OLLAMA_PID}) — logs at /tmp/ollama.log"
 
-# FlashInfer JIT can't detect Blackwell (SM 12.x) on CUDA < 12.9,
-# causing a false "requires sm75 or higher" error. Disable it.
-export VLLM_USE_FLASHINFER_SAMPLER=0
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-
-MODEL_ALIAS=$(echo "$MODEL" | sed 's|.*/||')
-
-MODEL_ALIAS=$(echo "$MODEL" | sed 's|.*/||')
-
-vllm serve "$MODEL" \
-    --host 127.0.0.1 \
-    --port "$VLLM_PORT" \
-    --gpu-memory-utilization 0.92 \
-    --served-model-name "$MODEL" "$MODEL_ALIAS" \
-    --enable-auto-tool-choice \
-    --tool-call-parser hermes \
-    ${MAX_CTX_ARGS} \
-    ${EXTRA_ARGS} \
-    > /tmp/vllm.log 2>&1 &
-VLLM_PID=$!
-ok "vLLM starting (pid ${VLLM_PID}) — logs at /tmp/vllm.log"
-
-# wait for vLLM to be ready (up to 10 min for large downloads)
-banner "Waiting for vLLM to become healthy"
-VLLM_READY=0
-for i in $(seq 1 600); do
-    if curl -sf http://127.0.0.1:${VLLM_PORT}/health > /dev/null 2>&1; then
-        VLLM_READY=1
+# wait for Ollama to be ready
+banner "Waiting for Ollama to become healthy"
+OLLAMA_READY=0
+for i in $(seq 1 60); do
+    if curl -sf http://127.0.0.1:${OLLAMA_PORT}/ > /dev/null 2>&1; then
+        OLLAMA_READY=1
         break
     fi
-    # check the process is still alive
-    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+    if ! kill -0 "$OLLAMA_PID" 2>/dev/null; then
         echo ""
-        echo -e "${RED}✗ vLLM exited unexpectedly. Last 40 lines of log:${RESET}"
-        tail -40 /tmp/vllm.log
+        echo -e "${RED}✗ Ollama exited unexpectedly. Last 40 lines of log:${RESET}"
+        tail -40 /tmp/ollama.log
         exit 1
     fi
     printf "\r  waiting… %ds" "$i"
     sleep 1
 done
 echo ""
-[[ "$VLLM_READY" -eq 1 ]] || fail "vLLM did not start within 600 s — check /tmp/vllm.log"
-ok "vLLM is healthy"
+[[ "$OLLAMA_READY" -eq 1 ]] || fail "Ollama did not start within 60 s — check /tmp/ollama.log"
+ok "Ollama is healthy"
+
+# ─── pull model ─────────────────────────────────────────────────────
+banner "Pulling model (may take a while on first run)"
+OLLAMA_HOST="127.0.0.1:${OLLAMA_PORT}" ollama pull "$MODEL"
+ok "Model ready: ${MODEL}"
 
 # ─── start FastAPI proxy ───────────────────────────────────────────
 banner "Starting auth proxy on port ${PROXY_PORT}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Ollama exposes an OpenAI-compatible endpoint at /v1
 COLAB_API_KEY="$COLAB_API_KEY" \
-VLLM_BASE="http://127.0.0.1:${VLLM_PORT}" \
+VLLM_BASE="http://127.0.0.1:${OLLAMA_PORT}" \
 python3 -m uvicorn proxy:app \
     --host 127.0.0.1 \
     --port "$PROXY_PORT" \
@@ -233,10 +179,10 @@ echo "  Base URL  ${TUNNEL_URL}/v1"
 echo "  API Key   ${COLAB_API_KEY}"
 echo ""
 echo -e "${BOLD}Logs:${RESET}"
-echo "  vLLM        /tmp/vllm.log"
+echo "  Ollama      /tmp/ollama.log"
 echo "  Proxy       /tmp/proxy.log"
 echo "  Cloudflare  /tmp/cloudflared.log"
 echo ""
 echo -e "${BOLD}Stop everything:${RESET}"
-echo "  kill ${VLLM_PID} ${PROXY_PID} ${CF_PID}"
+echo "  kill ${OLLAMA_PID} ${PROXY_PID} ${CF_PID}"
 echo ""

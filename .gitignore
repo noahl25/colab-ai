@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Logs (the setup scripts write these to /tmp, but just in case)
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

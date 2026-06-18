@@ -1,38 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── colours ────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'
-BOLD='\033[1m'; RESET='\033[0m'
+# ─────────────────────────────────────────────────────────────────────
+# setup-vllm.sh — serve a Hugging Face model with vLLM on a Colab GPU,
+# fronted by the auth proxy and exposed via a Cloudflare quick tunnel.
+# ─────────────────────────────────────────────────────────────────────
 
-banner() { echo -e "\n${CYAN}${BOLD}==> $1${RESET}\n"; }
-ok()     { echo -e "${GREEN}✓ $1${RESET}"; }
-fail()   { echo -e "${RED}✗ $1${RESET}"; exit 1; }
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# ─── pre-flight ─────────────────────────────────────────────────────
-banner "Pre-flight checks"
+VLLM_PORT=8000
 
-command -v nvidia-smi &>/dev/null || fail "nvidia-smi not found — need a GPU runtime"
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-ok "GPU detected"
+preflight
 
-command -v python3 &>/dev/null || fail "python3 not found"
-ok "python3 found"
-
-# ─── install system dependencies ────────────────────────────────────
-banner "Installing system packages"
-if command -v apt-get &>/dev/null; then
-    apt-get update -qq && apt-get install -y -qq wget curl > /dev/null 2>&1
-    ok "wget / curl installed"
-fi
-
-# ─── Python dependencies ────────────────────────────────────────────
+# ─── Python dependencies ─────────────────────────────────────────────
 banner "Installing Python packages"
 pip install --upgrade pip
 pip install vllm huggingface_hub fastapi uvicorn httpx
 ok "vLLM + proxy deps installed"
 
-# ─── CUDA library path fix (pip-installed CUDA libs) ────────────────
+# ─── CUDA library path fix (pip-installed CUDA libs) ─────────────────
 banner "Configuring CUDA library paths"
 NVIDIA_LIBS=$(python3 -c "
 import glob, os
@@ -50,58 +36,36 @@ if [[ -n "$NVIDIA_LIBS" ]]; then
     ok "Added pip CUDA libs to LD_LIBRARY_PATH"
 fi
 
-# also check system CUDA
 if [[ -d /usr/local/cuda/lib64 ]]; then
     export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
     ok "Added system CUDA to LD_LIBRARY_PATH"
 fi
 
-# ─── Hugging Face login ─────────────────────────────────────────────
+# ─── Hugging Face login ──────────────────────────────────────────────
 banner "Hugging Face login"
 echo "Some models (Llama, gated Qwen, etc.) need a HF token."
 echo "Grab one from https://huggingface.co/settings/tokens"
 echo ""
 hf auth login
 
-# ─── detect VRAM ────────────────────────────────────────────────────
-banner "Detecting GPU memory"
-VRAM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d ' ')
-VRAM_GIB=$(( VRAM_MIB / 1024 ))
-ok "GPU has ~${VRAM_GIB} GiB VRAM"
+detect_vram
 
 # ─── choose a model ─────────────────────────────────────────────────
 banner "Model selection"
 echo ""
 echo "Your GPU has ~${VRAM_GIB} GiB VRAM."
+echo "Browse models at https://huggingface.co/models"
 echo ""
-echo "Recommended models:"
-echo "  1) casperhansen/llama-3.3-70b-instruct-awq          (70B AWQ, ~38 GB, 128K ctx, tools) ← BEST all-round"
-echo "  2) Qwen/Qwen2.5-Coder-32B-Instruct-AWQ              (32B AWQ, ~22 GB, 128K ctx, tools) ← BEST coding"
-echo "  3) casperhansen/deepseek-r1-distill-qwen-32b-awq    (32B AWQ, ~20 GB, 128K ctx)        ← BEST reasoning"
-echo "  4) QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ       (30B AWQ, ~18 GB, 256K ctx, tools) ← BEST agentic"
-echo "  5) google/gemma-4-31B-it                            (31B bf16, ~62 GB, 256K ctx, tools) ← BEST multimodal"
-echo "  6) Enter a custom HF model id"
-echo ""
-read -rp "Pick [1/2/3/4/5/6] (default 1): " MODEL_CHOICE
+read -rp "HF model id (org/name): " MODEL
+[[ -z "$MODEL" ]] && fail "No model specified"
+
+# AWQ-quantized models need an explicit --quantization flag.
+read -rp "Quantization [blank=none, e.g. awq_marlin]: " QUANT
 EXTRA_ARGS=""
-case "${MODEL_CHOICE:-1}" in
-    1) MODEL="casperhansen/llama-3.3-70b-instruct-awq"
-       EXTRA_ARGS="--quantization awq_marlin" ;;
-    2) MODEL="Qwen/Qwen2.5-Coder-32B-Instruct-AWQ"
-       EXTRA_ARGS="--quantization awq_marlin" ;;
-    3) MODEL="casperhansen/deepseek-r1-distill-qwen-32b-awq"
-       EXTRA_ARGS="--quantization awq_marlin" ;;
-    4) MODEL="QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ"
-       EXTRA_ARGS="--quantization awq_marlin" ;;
-    5) MODEL="google/gemma-4-31B-it" ;;
-    6) read -rp "Model id (org/name): " MODEL
-       [[ -z "$MODEL" ]] && fail "No model specified" ;;
-    *) MODEL="casperhansen/llama-3.3-70b-instruct-awq"
-       EXTRA_ARGS="--quantization awq_marlin" ;;
-esac
+[[ -n "$QUANT" ]] && EXTRA_ARGS="--quantization ${QUANT}"
 ok "Will serve: ${MODEL} ${EXTRA_ARGS}"
 
-# ─── configurable context length ────────────────────────────────────
+# ─── configurable context length ─────────────────────────────────────
 echo ""
 echo "Context length is capped by the model's max_position_embeddings."
 echo "vLLM will auto-detect the model's native max if you leave this blank."
@@ -116,23 +80,15 @@ else
     ok "Will use model's native max context length"
 fi
 
-# ─── generate API key ──────────────────────────────────────────────
-COLAB_API_KEY="sk-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-export COLAB_API_KEY
+generate_api_key
 
-# ─── ports ──────────────────────────────────────────────────────────
-VLLM_PORT=8000
-PROXY_PORT=8001
-
-# ─── start vLLM ────────────────────────────────────────────────────
+# ─── start vLLM ──────────────────────────────────────────────────────
 banner "Starting vLLM (model download may take a while on first run)"
 
 # FlashInfer JIT can't detect Blackwell (SM 12.x) on CUDA < 12.9,
 # causing a false "requires sm75 or higher" error. Disable it.
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
-
-MODEL_ALIAS=$(echo "$MODEL" | sed 's|.*/||')
 
 MODEL_ALIAS=$(echo "$MODEL" | sed 's|.*/||')
 
@@ -146,100 +102,14 @@ vllm serve "$MODEL" \
     ${MAX_CTX_ARGS} \
     ${EXTRA_ARGS} \
     > /tmp/vllm.log 2>&1 &
-VLLM_PID=$!
-ok "vLLM starting (pid ${VLLM_PID}) — logs at /tmp/vllm.log"
+BACKEND_PID=$!
+ok "vLLM starting (pid ${BACKEND_PID}) — logs at /tmp/vllm.log"
 
-# wait for vLLM to be ready (up to 10 min for large downloads)
-banner "Waiting for vLLM to become healthy"
-VLLM_READY=0
-for i in $(seq 1 600); do
-    if curl -sf http://127.0.0.1:${VLLM_PORT}/health > /dev/null 2>&1; then
-        VLLM_READY=1
-        break
-    fi
-    # check the process is still alive
-    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
-        echo ""
-        echo -e "${RED}✗ vLLM exited unexpectedly. Last 40 lines of log:${RESET}"
-        tail -40 /tmp/vllm.log
-        exit 1
-    fi
-    printf "\r  waiting… %ds" "$i"
-    sleep 1
-done
-echo ""
-[[ "$VLLM_READY" -eq 1 ]] || fail "vLLM did not start within 600 s — check /tmp/vllm.log"
-ok "vLLM is healthy"
+# Large downloads can take a while, so allow up to 10 min.
+wait_for_health "http://127.0.0.1:${VLLM_PORT}/health" 600 "$BACKEND_PID" /tmp/vllm.log "vLLM"
 
-# ─── start FastAPI proxy ───────────────────────────────────────────
-banner "Starting auth proxy on port ${PROXY_PORT}"
+# ─── proxy + tunnel ──────────────────────────────────────────────────
+start_proxy "http://127.0.0.1:${VLLM_PORT}"
+start_tunnel
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-COLAB_API_KEY="$COLAB_API_KEY" \
-VLLM_BASE="http://127.0.0.1:${VLLM_PORT}" \
-python3 -m uvicorn proxy:app \
-    --host 127.0.0.1 \
-    --port "$PROXY_PORT" \
-    --app-dir "$SCRIPT_DIR" \
-    > /tmp/proxy.log 2>&1 &
-PROXY_PID=$!
-
-sleep 2
-if ! kill -0 "$PROXY_PID" 2>/dev/null; then
-    fail "Proxy failed to start — check /tmp/proxy.log"
-fi
-ok "Auth proxy running (pid ${PROXY_PID})"
-
-# ─── Cloudflare Tunnel ──────────────────────────────────────────────
-banner "Setting up Cloudflare Tunnel"
-
-if ! command -v cloudflared &>/dev/null; then
-    echo "Downloading cloudflared…"
-    wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-        -O /usr/local/bin/cloudflared
-    chmod +x /usr/local/bin/cloudflared
-    ok "cloudflared installed"
-fi
-
-cloudflared tunnel --url http://127.0.0.1:${PROXY_PORT} \
-    > /tmp/cloudflared.log 2>&1 &
-CF_PID=$!
-
-# parse the tunnel URL (cloudflared prints it to stderr)
-TUNNEL_URL=""
-for i in $(seq 1 30); do
-    TUNNEL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1 || true)
-    if [[ -n "$TUNNEL_URL" ]]; then break; fi
-    sleep 1
-done
-
-[[ -n "$TUNNEL_URL" ]] || fail "Could not detect tunnel URL — check /tmp/cloudflared.log"
-
-# ─── summary ───────────────────────────────────────────────────────
-banner "All set!"
-
-echo ""
-echo -e "${BOLD}Model:${RESET}       ${MODEL}"
-echo -e "${BOLD}Tunnel URL:${RESET}  ${TUNNEL_URL}"
-echo -e "${BOLD}API Key:${RESET}     ${COLAB_API_KEY}"
-echo ""
-echo -e "${BOLD}OpenAI-compatible base URL:${RESET}"
-echo "  ${TUNNEL_URL}/v1"
-echo ""
-echo -e "${BOLD}Quick test:${RESET}"
-echo "  curl ${TUNNEL_URL}/v1/models \\"
-echo "    -H \"Authorization: Bearer ${COLAB_API_KEY}\""
-echo ""
-echo -e "${BOLD}Use in Cursor / Aider / etc:${RESET}"
-echo "  Base URL  ${TUNNEL_URL}/v1"
-echo "  API Key   ${COLAB_API_KEY}"
-echo ""
-echo -e "${BOLD}Logs:${RESET}"
-echo "  vLLM        /tmp/vllm.log"
-echo "  Proxy       /tmp/proxy.log"
-echo "  Cloudflare  /tmp/cloudflared.log"
-echo ""
-echo -e "${BOLD}Stop everything:${RESET}"
-echo "  kill ${VLLM_PID} ${PROXY_PID} ${CF_PID}"
-echo ""
+print_summary "$MODEL" "vLLM       " /tmp/vllm.log

@@ -1,7 +1,7 @@
 [project]
 name = "colab-ai"
 version = "0.1.0"
-description = "Add your description here"
+description = "Serve an open LLM on a Colab GPU as an OpenAI-compatible API behind a Cloudflare tunnel with API-key auth."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

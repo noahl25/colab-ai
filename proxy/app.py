@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-FastAPI reverse proxy that sits in front of vLLM and enforces
-Bearer-token authentication. Every request to /v1/* is validated
-then forwarded to the local vLLM server.
+FastAPI reverse proxy that sits in front of an OpenAI-compatible backend
+(vLLM or Ollama) and enforces Bearer-token authentication. Every request
+to /v1/* is validated then forwarded to the local backend.
 """
 
 import os
@@ -10,7 +10,8 @@ import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 
-VLLM_BASE = os.environ.get("VLLM_BASE", "http://127.0.0.1:8000")
+# BACKEND_BASE is the local OpenAI-compatible server (vLLM :8000 / Ollama :11434).
+BACKEND_BASE = os.environ.get("BACKEND_BASE", "http://127.0.0.1:8000")
 API_KEY = os.environ["COLAB_API_KEY"]
 
 app = FastAPI(title="colab-ai proxy")
@@ -34,7 +35,7 @@ async def health():
 async def proxy_v1(request: Request, path: str):
     _check_auth(request)
 
-    target = f"{VLLM_BASE}/v1/{path}"
+    target = f"{BACKEND_BASE}/v1/{path}"
     headers = {
         k: v
         for k, v in request.headers.items()
@@ -56,7 +57,7 @@ async def proxy_v1(request: Request, path: str):
         await client.aclose()
         return JSONResponse(
             status_code=502,
-            content={"error": "vLLM backend is not reachable"},
+            content={"error": "backend is not reachable"},
         )
 
     is_stream = "text/event-stream" in upstream.headers.get("content-type", "")

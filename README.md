@@ -35,7 +35,7 @@ colab-ai/
 3. In the xterm terminal that opens, clone and run one of the setup scripts:
 
    ```bash
-   git clone https://github.com/YOUR_USER/colab-ai.git
+   git clone https://github.com/noahl25/colab-ai.git
    cd colab-ai
    bash scripts/setup-ollama.sh     # or: bash scripts/setup-vllm.sh
    ```
